@@ -64,8 +64,6 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    # Add your custom middleware (optional)
-    # 'hospital.middleware.QueryCountDebugMiddleware',
 ]
 
 TEMPLATES = [
@@ -87,7 +85,6 @@ TEMPLATES = [
 # ========== DATABASE ==========
 DATABASE_URL = config('DATABASE_URL', default='sqlite:///db.sqlite3')
 
-# Parse database URL - WITHOUT ssl_require parameter
 DATABASES = {
     'default': dj_database_url.parse(
         DATABASE_URL,
@@ -96,21 +93,18 @@ DATABASES = {
     )
 }
 
-# Add SSL options ONLY for PostgreSQL
 db_engine = DATABASES['default']['ENGINE']
 if 'postgresql' in db_engine:
     DATABASES['default']['OPTIONS'] = {
         'sslmode': 'require'
     }
 
-# Log which database we're using
 logger.info(f"📊 Using database engine: {db_engine}")
 if 'sqlite' in db_engine:
     logger.info(f"   SQLite database path: {DATABASES['default']['NAME']}")
 else:
     logger.info(f"   PostgreSQL database host: {DATABASES['default'].get('HOST', 'unknown')}")
 
-# Add PostgreSQL optimizations for production
 if not DEBUG and 'postgresql' in db_engine:
     if 'OPTIONS' not in DATABASES['default']:
         DATABASES['default']['OPTIONS'] = {}
@@ -133,9 +127,8 @@ EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 # ========== CACHE ==========
 REDIS_URL = config('REDIS_URL', default='')
 
-# Check if hiredis is available for better performance
 try:
-    import hiredis # type: ignore  # noqa: F401
+    import hiredis  # type: ignore
     HAS_HIREDIS = True
     logger.info("✅ hiredis installed - using fast Redis parser")
 except ImportError:
@@ -156,7 +149,6 @@ if REDIS_URL:
         'PICKLE_VERSION': -1,
     }
     
-    # Only add hiredis parser if available
     if HAS_HIREDIS:
         CACHE_OPTIONS['PARSER_CLASS'] = 'redis.connection.HiredisParser'
     
@@ -171,7 +163,6 @@ if REDIS_URL:
         }
     }
     
-    # Use Redis for session storage
     SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
     SESSION_CACHE_ALIAS = 'default'
     logger.info("✅ Redis cache configured successfully")
@@ -185,19 +176,15 @@ else:
     SESSION_ENGINE = 'django.contrib.sessions.backends.db'
     logger.info("⚠️ No Redis URL found - using local memory cache")
 
-
 def safe_cache_delete_pattern(pattern: str) -> None:
-    """Delete cache keys matching pattern. Silent no-op on LocMemCache."""
     from django.core.cache import cache
     try:
         cache.delete_pattern(pattern)
         logger.debug(f"Deleted cache pattern: {pattern}")
     except AttributeError:
-        # LocMemCache has no delete_pattern — safe to ignore in local dev
         pass
     except Exception as e:
         logger.error(f"Error deleting cache pattern {pattern}: {e}")
-
 
 # ========== CELERY ==========
 CELERY_BROKER_URL = REDIS_URL if REDIS_URL else 'memory://'
@@ -208,14 +195,13 @@ CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ALWAYS_EAGER = not bool(REDIS_URL)
 CELERY_TASK_EAGER_PROPAGATES = True
-CELERY_WORKER_MAX_TASKS_PER_CHILD = 1000  # Prevent memory leaks
-CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # Fair task distribution
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 1000
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 
 if REDIS_URL:
     logger.info("✅ Celery configured with Redis broker")
 else:
     logger.warning("⚠️ No Redis URL found - Celery tasks will run synchronously")
-
 
 # ========== STATIC FILES ==========
 STATIC_URL = '/static/'
@@ -224,7 +210,6 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 WHITENOISE_USE_FINDERS = True
 WHITENOISE_MANIFEST_STRICT = False
 WHITENOISE_ALLOW_ALL_ORIGINS = True
-
 
 # ========== MEDIA FILES ==========
 USE_S3 = config('USE_S3', default=False, cast=bool)
@@ -240,7 +225,7 @@ AWS_CREDENTIALS_PROVIDED = all([
     AWS_STORAGE_BUCKET_NAME,
 ])
 
-if AWS_CREDENTIALS_PROVIDED:
+if AWS_CREDENTIALS_PROVIDED and USE_S3:
     logger.info('✅ AWS S3 credentials found — using S3 storage')
 
     AWS_S3_USE_SSL = True
@@ -253,9 +238,8 @@ if AWS_CREDENTIALS_PROVIDED:
         'ACL': 'public-read',
     }
     
-    # Enable querystring auth for private buckets (required for eu-north-1)
     AWS_QUERYSTRING_AUTH = True
-    AWS_QUERYSTRING_EXPIRE = 3600  # URLs expire after 1 hour
+    AWS_QUERYSTRING_EXPIRE = 3600
 
     DEFAULT_FILE_STORAGE = 'hospital.storage_backends.MediaStorage'
     MEDIA_URL = f'https://{AWS_STORAGE_BUCKET_NAME}.s3.{AWS_S3_REGION_NAME}.amazonaws.com/media/'
@@ -268,10 +252,7 @@ else:
     MEDIA_URL = '/media/'
     MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
-
-# Used by serializers when constructing absolute local media URLs
-BASE_URL = config('BASE_URL', default='http://localhost:8000')
-
+BASE_URL = config('BASE_URL', default='https://hospitalback-clean-0fre.onrender.com')
 
 # ========== JWT ==========
 SIMPLE_JWT = {
@@ -288,7 +269,6 @@ SIMPLE_JWT = {
     'USER_ID_FIELD': 'id',
     'USER_ID_CLAIM': 'user_id',
 }
-
 
 # ========== DRF ==========
 REST_FRAMEWORK = {
@@ -323,12 +303,11 @@ if not DEBUG:
     ]
     logger.info("✅ DRF configured for production (JSON only)")
 
-
 # ========== CORS ==========
 CORS_ALLOWED_ORIGINS = config(
     'CORS_ALLOWED_ORIGINS',
     cast=Csv(),
-    default='http://localhost:3000,https://*.vercel.app',
+    default='http://localhost:3000,https://ettahospitalclone.vercel.app',
 )
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = [
@@ -340,9 +319,8 @@ CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
 CSRF_TRUSTED_ORIGINS = config(
     'CSRF_TRUSTED_ORIGINS',
     cast=Csv(),
-    default='http://localhost:3000,https://*.vercel.app,https://*.onrender.com',
+    default='http://localhost:3000,https://ettahospitalclone.vercel.app,https://*.onrender.com',
 )
-
 
 # ========== SESSION SECURITY ==========
 if not DEBUG:
@@ -356,7 +334,6 @@ if not DEBUG:
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
     logger.info("✅ Security middleware configured for production")
-
 
 # ========== SOCIAL AUTH ==========
 AUTHENTICATION_BACKENDS = (
@@ -372,7 +349,6 @@ if SOCIAL_AUTH_GOOGLE_OAUTH2_KEY and SOCIAL_AUTH_GOOGLE_OAUTH2_SECRET:
     logger.info("✅ Google OAuth configured")
 else:
     logger.warning("⚠️ Google OAuth credentials missing")
-
 
 # ========== LOGGING ==========
 LOGGING = {
@@ -405,7 +381,7 @@ LOGGING = {
             'propagate': False,
         },
         'django.db.backends': {
-            'level': 'WARNING',  # Set to INFO to see SQL queries in dev
+            'level': 'WARNING',
         },
         'hospital': {
             'handlers': ['console'],
@@ -420,10 +396,9 @@ LOGGING = {
     },
 }
 
-
 # ========== UPLOAD LIMITS ==========
-DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024   # 10 MB
-FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024   # 10 MB
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -434,5 +409,6 @@ logger.info(f"🔧 DEBUG Mode: {DEBUG}")
 logger.info(f"🌍 Allowed Hosts: {ALLOWED_HOSTS}")
 logger.info(f"🗄️  Database: {DATABASES['default']['ENGINE']}")
 logger.info(f"⚡ Redis Available: {bool(REDIS_URL)}")
-logger.info(f"☁️  S3 Storage: {AWS_CREDENTIALS_PROVIDED}")
+logger.info(f"☁️  S3 Storage: {AWS_CREDENTIALS_PROVIDED and USE_S3}")
+logger.info(f"🔗 Base URL: {BASE_URL}")
 logger.info("=" * 50)
