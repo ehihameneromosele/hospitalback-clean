@@ -135,7 +135,7 @@ REDIS_URL = config('REDIS_URL', default='')
 
 # Check if hiredis is available for better performance
 try:
-    import hiredis
+    import hiredis # type: ignore  # noqa: F401
     HAS_HIREDIS = True
     logger.info("✅ hiredis installed - using fast Redis parser")
 except ImportError:
@@ -227,6 +227,8 @@ WHITENOISE_ALLOW_ALL_ORIGINS = True
 
 
 # ========== MEDIA FILES ==========
+USE_S3 = config('USE_S3', default=False, cast=bool)
+
 AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='')
 AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='')
 AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME', default='')
@@ -258,10 +260,14 @@ if AWS_CREDENTIALS_PROVIDED:
     DEFAULT_FILE_STORAGE = 'hospital.storage_backends.MediaStorage'
     MEDIA_URL = f'https://{AWS_STORAGE_BUCKET_NAME}.s3.{AWS_S3_REGION_NAME}.amazonaws.com/media/'
 else:
-    logger.warning('⚠️ AWS S3 credentials missing — using local filesystem storage')
+    if not AWS_CREDENTIALS_PROVIDED:
+        logger.warning('⚠️ AWS S3 credentials missing — using local filesystem storage')
+    else:
+        logger.warning('⚠️ USE_S3 is False — using local filesystem storage')
     DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
     MEDIA_URL = '/media/'
     MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
 
 # Used by serializers when constructing absolute local media URLs
 BASE_URL = config('BASE_URL', default='http://localhost:8000')
