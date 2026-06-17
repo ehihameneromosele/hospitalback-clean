@@ -253,6 +253,7 @@ else:
     MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 BASE_URL = config('BASE_URL', default='https://hospitalback-clean-0fre.onrender.com')
+FRONTEND_URL = config('FRONTEND_URL', default='https://ettahospitalclone.vercel.app')
 
 # ========== JWT ==========
 SIMPLE_JWT = {
