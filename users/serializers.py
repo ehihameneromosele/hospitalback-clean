@@ -125,75 +125,38 @@ class RegistrationSerializer(serializers.Serializer):
 
         user = User.objects.create_user(username=username, email=email, password=password)
 
-        profile, _ = Profile.objects.get_or_create(user=user)
+        profile, _ = Profile.objects.get(user=user)
         profile.fullname = validated_data.get('fullname', '')
         profile.phone    = validated_data.get('phone', '')
         profile.gender   = validated_data.get('gender', None)
         profile.role     = validated_data.get('role', 'PATIENT')
 
-        # In RegistrationSerializer.create method, find the profile_pix section and replace with:
-
         if profile_pix:
             import os
             from django.utils.text import slugify
-            from datetime import datetime
-            from django.core.files.storage import default_storage
-            from django.core.files import File
+            # from datetime import datetime
+            # from django.core.files.storage import default_storage
+            # from django.core.files import File
             
             ext = os.path.splitext(profile_pix.name)[1]
-            clean_username = slugify(username)
-            filename = f'{clean_username}_profile{ext}'
-            s3_key = f"media/profile/{filename}"
+            # clean_username = slugify(username)
+            filename = f'{slugify(username)}_profile{ext}'
+            # s3_key = f"media/profile/{filename}"
+            profile_pix.name = filename
             
-            logger.info(
-                'Processing profile image for %s — %s (%d bytes)',
-                username, filename, profile_pix.size,
-            )
+            logger.info('Saving profile image for %s via storage backend', username)
 
-                # Save to Django's default storage (local)
-            saved_path = default_storage.save(f"profile/{filename}", profile_pix)
-            logger.info(f'✅ Local save complete: {saved_path}')
-            
-            with default_storage.open(saved_path, 'rb') as f:
-                django_file = File(f)
-                
-                # Upload to S3
-                success, result = upload_to_s3(
-                    django_file,
-                    s3_key,
-                    metadata={
-                        'username': username, 
-                        'original_name': profile_pix.name,
-                        'uploaded_at': datetime.now().isoformat()
-                    }
-                )
-        
-                if success:
-                    logger.info(f'✅ S3 upload successful: {result}')
-                    # Update the profile with the file reference
-                    profile.profile_pix.name = saved_path
-                else:
-                    logger.error(f'❌ S3 upload failed: {result}')
-            
-            profile.save()
-
-
-        else:
-            profile.save()
-            logger.info('Profile created without image for %s', username)
-            
+        profile.save()
         try:
             import threading
-
             def send_email_async():
                 try:
                     SendMail(email)
                 except Exception as e:
                     logger.warning('Failed to send welcome email to %s: %s', email, e)
 
-            email_thread        = threading.Thread(target=send_email_async)
-            email_thread.daemon = True
-            email_thread.start()
+            t = threading.Thread(target=send_email_async, daemon=True)
+            t.start()
 
         except Exception as e:
             logger.warning('Failed to schedule welcome email for %s: %s', email, e)
