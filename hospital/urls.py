@@ -57,4 +57,5 @@ urlpatterns = [
     path('blog/author/<int:author_id>/',    BlogPostByAuthorView.as_view(),            name='blog-by-author'),
     path('blog/',                           BlogPostListCreateView.as_view(),          name='blog-list-create'),
     path('blog/<slug:slug>/', BlogPostRetrieveUpdateDestroyView.as_view(), name='blog-detail'),
+#     path('seed-blog/', SeedBlogView.as_view(), name='seed-blog'),
 ]
