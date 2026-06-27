@@ -1,3 +1,4 @@
+# settings.py - FIXED
 import os
 import logging
 from pathlib import Path
@@ -127,13 +128,8 @@ EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 # ========== CACHE ==========
 REDIS_URL = config('REDIS_URL', default='')
 
-try:
-    import hiredis  # type: ignore
-    HAS_HIREDIS = True
-    logger.info("✅ hiredis installed - using fast Redis parser")
-except ImportError:
-    HAS_HIREDIS = False
-    logger.warning("⚠️ hiredis not installed - using pure Python parser (slower)")
+# REMOVED: hiredis detection block - HiredisParser no longer exists in redis-py 5.x
+# django_redis will use the default pure-Python parser automatically
 
 if REDIS_URL:
     CACHE_OPTIONS = {
@@ -147,10 +143,8 @@ if REDIS_URL:
         'COMPRESS_MIN_LEN': 1024,
         'SERIALIZER': 'django_redis.serializers.json.JSONSerializer',
         'PICKLE_VERSION': -1,
+        # REMOVED: 'PARSER_CLASS' - HiredisParser was removed in redis-py 5.x
     }
-    
-    if HAS_HIREDIS:
-        CACHE_OPTIONS['PARSER_CLASS'] = 'redis.connection.HiredisParser'
     
     CACHES = {
         'default': {
