@@ -125,7 +125,7 @@ class RegistrationSerializer(serializers.Serializer):
 
         user = User.objects.create_user(username=username, email=email, password=password)
 
-        profile, _ = Profile.objects.get(user=user)
+        profile, _ = Profile.objects.get_or_create(user=user)
         profile.fullname = validated_data.get('fullname', '')
         profile.phone    = validated_data.get('phone', '')
         profile.gender   = validated_data.get('gender', None)
@@ -134,16 +134,10 @@ class RegistrationSerializer(serializers.Serializer):
         if profile_pix:
             import os
             from django.utils.text import slugify
-            # from datetime import datetime
-            # from django.core.files.storage import default_storage
-            # from django.core.files import File
             
             ext = os.path.splitext(profile_pix.name)[1]
-            # clean_username = slugify(username)
-            filename = f'{slugify(username)}_profile{ext}'
-            # s3_key = f"media/profile/{filename}"
-            profile_pix.name = filename
-            
+            profile_pix.name = f'{slugify(username)}_profile{ext}'
+            profile.profile_pix = profile_pix         
             logger.info('Saving profile image for %s via storage backend', username)
 
         profile.save()
