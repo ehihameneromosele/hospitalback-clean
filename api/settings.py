@@ -227,21 +227,17 @@ if AWS_CREDENTIALS_PROVIDED and USE_S3:
     AWS_S3_FILE_OVERWRITE = False
     AWS_S3_REGION_NAME = AWS_S3_REGION_NAME
     AWS_S3_SIGNATURE_VERSION = 's3v4'
+        
+    AWS_DEFAULT_ACL = 'public-read'
+    AWS_QUERYSTRING_AUTH = False  # Disable query string auth for public access
     AWS_S3_OBJECT_PARAMETERS = {
         'CacheControl': 'max-age=86400',
-        'ACL': 'public-read',
     }
-    
-    AWS_QUERYSTRING_AUTH = True
-    AWS_QUERYSTRING_EXPIRE = 3600
 
     DEFAULT_FILE_STORAGE = 'hospital.storage_backends.MediaStorage'
     MEDIA_URL = f'https://{AWS_STORAGE_BUCKET_NAME}.s3.{AWS_S3_REGION_NAME}.amazonaws.com/media/'
 else:
-    if not AWS_CREDENTIALS_PROVIDED:
-        logger.warning('⚠️ AWS S3 credentials missing — using local filesystem storage')
-    else:
-        logger.warning('⚠️ USE_S3 is False — using local filesystem storage')
+    logger.warning('⚠️ Using local filesystem storage')
     DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
     MEDIA_URL = '/media/'
     MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
