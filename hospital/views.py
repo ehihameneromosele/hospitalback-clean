@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from .models import (
     Appointment, TestRequest, VitalRequest, Vitals, LabResult,
-    MedicalReport, BlogPost,
+    MedicalReport, BlogPost, BlogCategory,
 )
 from users.models import Profile
 from django.db import models, transaction
@@ -13,6 +13,7 @@ from .serializers import (
     AssignmentSerializer, AppointmentAssignmentSerializer,
     StaffProfileSerializer, AppointmentDetailSerializer,
     BlogPostSerializer, BlogPostCreateSerializer, BlogPostListSerializer,
+    BlogCategorySerializer, BlogPostSuggestionSerializer,
 )
 from rest_framework.exceptions import PermissionDenied
 from .permissions import IsRole
@@ -118,7 +119,6 @@ class AppointmentDetailView(generics.RetrieveAPIView, CacheMixin):
             'medical_report',
         )
 
-    # FIX-1: No cache_page decorator.
     def get(self, request, *args, **kwargs):
         cache_key = f"{self.cache_key_prefix}:{kwargs.get('pk')}:{request.user.id}"
         cached = cache.get(cache_key)
@@ -352,14 +352,80 @@ class StaffListView(generics.ListAPIView):
         )
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# BLOG CATEGORIES
+# ──────────────────────────────────────────────────────────────────────────────
+
+class BlogCategoryListView(generics.ListAPIView):
+    """
+    GET /hospital/blog/categories/
+    Public — returns all categories with their published post counts.
+    """
+    serializer_class   = BlogCategorySerializer
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get_queryset(self):
+        return BlogCategory.objects.prefetch_related('posts').order_by('name')
+
+    def get(self, request, *args, **kwargs):
+        cache_key = 'blog_categories'
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+        response = super().get(request, *args, **kwargs)
+        if response.status_code == 200:
+            try:
+                cache.set(cache_key, response.data, 600)  # 10 min TTL
+            except Exception as e:
+                logger.warning('BlogCategoryListView cache.set failed: %s', e)
+        return response
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BLOG SEARCH SUGGESTIONS
+# ──────────────────────────────────────────────────────────────────────────────
+
+class BlogPostSuggestView(generics.ListAPIView):
+    """
+    GET /hospital/blog/suggest/?q=<query>[&category=<slug>]
+    Returns up to 6 lightweight suggestions for the search autocomplete dropdown.
+    Scoped to a category when ?category=<slug> is provided.
+    Public endpoint — no auth required.
+    """
+    serializer_class   = BlogPostSuggestionSerializer
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get_queryset(self):
+        q        = self.request.query_params.get('q', '').strip()
+        cat_slug = self.request.query_params.get('category', '').strip()
+
+        qs = BlogPost.objects.filter(published=True).select_related('category')
+
+        # Scope by category when provided
+        if cat_slug:
+            qs = qs.filter(category__slug=cat_slug)
+
+        # Title match (starts-with first for relevance, then contains)
+        if q:
+            qs = qs.filter(title__icontains=q)
+
+        return qs.order_by('title')[:6]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BLOG POSTS
+# ──────────────────────────────────────────────────────────────────────────────
+
 class BlogPostLatestView(generics.ListAPIView, CacheMixin):
     """
-    GET /hospital/blog/latest/?limit=N
+    GET /hospital/blog/latest/?limit=N[&category=<slug>]
     Public endpoint — no authentication required.
     """
     serializer_class = BlogPostListSerializer
     permission_classes = [permissions.AllowAny]
-    authentication_classes = []  # ADD THIS LINE - explicitly disable authentication
+    authentication_classes = []
     cache_timeout = 300
     cache_key_prefix = 'blog_latest'
 
@@ -368,19 +434,28 @@ class BlogPostLatestView(generics.ListAPIView, CacheMixin):
             limit = int(self.request.query_params.get('limit', 6))
         except (TypeError, ValueError):
             limit = 6
-        return (
+
+        cat_slug = self.request.query_params.get('category', '').strip()
+
+        qs = (
             BlogPost.objects
             .filter(published=True)
-            .select_related('author')
+            .select_related('author', 'category')
             .only('id', 'title', 'slug', 'description', 'featured_image',
                   'image_1', 'image_2', 'published_date', 'created_at',
-                  'author__fullname', 'author__role')
-            .order_by('-published_date', '-created_at')[:limit]
+                  'author__fullname', 'author__role', 'category_id')
+            .order_by('-published_date', '-created_at')
         )
 
+        if cat_slug:
+            qs = qs.filter(category__slug=cat_slug)
+
+        return qs[:limit]
+
     def get(self, request, *args, **kwargs):
-        limit = request.GET.get('limit', '6')
-        cache_key = f"{self.cache_key_prefix}:{limit}"
+        limit    = request.GET.get('limit', '6')
+        cat_slug = request.GET.get('category', '')
+        cache_key = f"{self.cache_key_prefix}:{limit}:{cat_slug}"
         cached = cache.get(cache_key)
         if cached is not None:
             return Response(cached)
@@ -400,15 +475,19 @@ class BlogPostListCreateView(generics.ListCreateAPIView, CacheMixin):
 
     def get_queryset(self):
         if self.request.method == 'GET':
-            return (
+            cat_slug = self.request.query_params.get('category', '').strip()
+            qs = (
                 BlogPost.objects
                 .filter(published=True)
-                .select_related('author')
+                .select_related('author', 'category')
                 .only('id', 'title', 'slug', 'description', 'featured_image',
                       'image_1', 'image_2', 'published', 'published_date',
-                      'created_at', 'author__fullname', 'author__role')
+                      'created_at', 'author__fullname', 'author__role', 'category_id')
                 .order_by('-published_date', '-created_at')
             )
+            if cat_slug:
+                qs = qs.filter(category__slug=cat_slug)
+            return qs
         return BlogPost.objects.all()
 
     def get_serializer_class(self):
@@ -419,9 +498,9 @@ class BlogPostListCreateView(generics.ListCreateAPIView, CacheMixin):
             return [permissions.IsAuthenticated(), IsRole()]
         return [permissions.AllowAny()]
 
-    # FIX-1: No cache_page decorator — manual cache on response.data only.
     def get(self, request, *args, **kwargs):
-        cache_key = f"{self.cache_key_prefix}:{request.GET.urlencode()}"
+        cat_slug  = request.GET.get('category', '')
+        cache_key = f"{self.cache_key_prefix}:{request.GET.urlencode()}:{cat_slug}"
         cached = cache.get(cache_key)
         if cached is not None:
             return Response(cached)
@@ -440,13 +519,14 @@ class BlogPostListCreateView(generics.ListCreateAPIView, CacheMixin):
         blog_post = serializer.save(author=profile)
         safe_cache_delete_pattern('blog_list:*')
         safe_cache_delete_pattern('blog_latest:*')
+        safe_cache_delete_pattern('blog_categories')
         from .tasks import process_blog_images
         transaction.on_commit(lambda: process_blog_images.delay(blog_post.id))
         logger.info('Blog post %d created by %s', blog_post.pk, profile.fullname)
 
 
 class BlogPostRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView, CacheMixin):
-    queryset         = BlogPost.objects.all().select_related('author')
+    queryset         = BlogPost.objects.all().select_related('author', 'category')
     parser_classes   = [MultiPartParser, FormParser, JSONParser]
     lookup_field     = 'slug'
     cache_timeout    = 600
@@ -460,7 +540,6 @@ class BlogPostRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView, C
             return [permissions.IsAuthenticated(), IsRole()]
         return [permissions.AllowAny()]
 
-    # FIX-1: No cache_page decorator.
     def get(self, request, *args, **kwargs):
         cache_key = f"{self.cache_key_prefix}:{kwargs.get('slug')}"
         cached = cache.get(cache_key)
@@ -482,6 +561,7 @@ class BlogPostRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView, C
         safe_cache_delete_pattern('blog_detail:*')
         safe_cache_delete_pattern('blog_list:*')
         safe_cache_delete_pattern('blog_latest:*')
+        safe_cache_delete_pattern('blog_categories')
         from .tasks import process_blog_images
         transaction.on_commit(lambda: process_blog_images.delay(instance.id))
         logger.info('Blog post %d updated by %s', instance.pk, profile.fullname)
@@ -493,17 +573,27 @@ class BlogPostRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView, C
         safe_cache_delete_pattern('blog_detail:*')
         safe_cache_delete_pattern('blog_list:*')
         safe_cache_delete_pattern('blog_latest:*')
+        safe_cache_delete_pattern('blog_categories')
         logger.info('Blog post %d deleted by %s', instance.pk, profile.fullname)
         instance.delete()
 
 
 class BlogPostSearchView(generics.ListAPIView):
+    """
+    GET /hospital/blog/search/?q=<query>[&category=<slug>]
+    Full search — title, description, content. Optional category scope.
+    """
     serializer_class   = BlogPostListSerializer
     permission_classes = [permissions.AllowAny]
 
     def get_queryset(self):
-        qs = BlogPost.objects.filter(published=True)
-        q = self.request.query_params.get('q')
+        qs       = BlogPost.objects.filter(published=True).select_related('author', 'category')
+        q        = self.request.query_params.get('q')
+        cat_slug = self.request.query_params.get('category', '').strip()
+
+        if cat_slug:
+            qs = qs.filter(category__slug=cat_slug)
+
         if q:
             qs = qs.filter(
                 Q(title__icontains=q) |
@@ -519,7 +609,7 @@ class AdminBlogPostListView(generics.ListAPIView):
     allowed_roles      = ['ADMIN']
 
     def get_queryset(self):
-        return BlogPost.objects.all().order_by('-created_at')
+        return BlogPost.objects.all().select_related('author', 'category').order_by('-created_at')
 
 
 class BlogPostByAuthorView(generics.ListAPIView):
@@ -529,7 +619,7 @@ class BlogPostByAuthorView(generics.ListAPIView):
     def get_queryset(self):
         return BlogPost.objects.filter(
             author_id=self.kwargs['author_id'], published=True,
-        ).order_by('-published_date', '-created_at')
+        ).select_related('author', 'category').order_by('-published_date', '-created_at')
 
 
 class BlogStatsView(APIView):
@@ -547,98 +637,3 @@ class BlogStatsView(APIView):
             'posts_with_toc':  with_toc,
             'toc_usage_rate':  (with_toc / total * 100) if total else 0,
         })
-
-
-# # Add this at the end of hospital/views.py
-# class SeedBlogView(APIView):
-#     """Temporary endpoint to seed blog posts - REMOVE AFTER USE"""
-#     permission_classes = [permissions.AllowAny]
-    
-#     def get(self, request):
-#         from hospital.models import BlogPost
-#         from users.models import Profile
-#         from django.utils import timezone
-        
-#         # Check if already seeded
-#         if BlogPost.objects.filter(published=True).exists():
-#             return Response({
-#                 'message': 'Blog posts already exist',
-#                 'count': BlogPost.objects.filter(published=True).count()
-#             })
-        
-#         # Get or create admin
-#         admin = Profile.objects.filter(role='ADMIN').first()
-#         if not admin:
-#             admin = Profile.objects.first()
-#             if admin:
-#                 admin.role = 'ADMIN'
-#                 admin.save()
-        
-#         if not admin:
-#             return Response({'error': 'No profiles found'}, status=400)
-        
-#         blog_posts_data = [
-#             {
-#                 "title": "The Importance of Regular Exercise",
-#                 "description": "Regular physical activity is essential for maintaining good health and preventing chronic diseases.",
-#                 "content": "<h2>Why Exercise Matters</h2><p>Exercise helps control weight, combats health conditions, and improves mood.</p><h2>Types of Exercise</h2><p>Include cardio, strength training, and flexibility exercises in your routine.</p>",
-#                 "featured_image": "blog_images/Exercise-Right-Blog-Images-7-1536x1044.png",
-#                 "image_1": "blog_images/exercise2.jpg",
-#                 "image_2": "blog_images/exercise3.jpg",
-#             },
-#             {
-#                 "title": "Understanding Prostate Cancer",
-#                 "description": "Learn about prostate cancer symptoms, diagnosis, and treatment options.",
-#                 "content": "<h2>What is Prostate Cancer?</h2><p>Prostate cancer occurs in the prostate gland and is one of the most common types of cancer in men.</p><h2>Symptoms</h2><p>Common symptoms include difficulty urinating and blood in urine.</p>",
-#                 "featured_image": "blog_images/prostatecancer1.jpg",
-#                 "image_1": "blog_images/prostatecancer2.jpg",
-#                 "image_2": "blog_images/prostate-cancer3.webp",
-#             },
-#             {
-#                 "title": "Healthy Eating Habits for Better Living",
-#                 "description": "Discover how proper nutrition can improve your overall health and wellbeing.",
-#                 "content": "<h2>Balanced Diet</h2><p>A balanced diet includes fruits, vegetables, whole grains, and lean proteins.</p><h2>Hydration</h2><p>Drink plenty of water throughout the day.</p>",
-#                 "featured_image": "blog_images/ginger1.jpg",
-#                 "image_1": "blog_images/ginger2.png",
-#                 "image_2": "blog_images/ginger3.jpg",
-#             },
-#             {
-#                 "title": "Benefits of Regular Health Checkups",
-#                 "description": "Why routine medical checkups are crucial for maintaining optimal health.",
-#                 "content": "<h2>Prevention is Better Than Cure</h2><p>Regular checkups help detect health issues early when they're more treatable.</p>",
-#                 "featured_image": "blog_images/orange1.jpg",
-#                 "image_1": "blog_images/orange2.jpeg",
-#                 "image_2": "blog_images/orange3.webp",
-#             },
-#         ]
-        
-#         created = []
-#         errors = []
-        
-#         for data in blog_posts_data:
-#             try:
-#                 post = BlogPost.objects.create(
-#                     title=data['title'],
-#                     description=data['description'],
-#                     content=data['content'],
-#                     author=admin,
-#                     published=True,
-#                     published_date=timezone.now(),
-#                     enable_toc=True,
-#                     featured_image=data.get('featured_image'),
-#                     image_1=data.get('image_1'),
-#                     image_2=data.get('image_2'),
-#                 )
-#                 created.append({
-#                     'id': post.id,
-#                     'title': post.title,
-#                     'featured_image_url': post.featured_image.url if post.featured_image else None,
-#                 })
-#             except Exception as e:
-#                 errors.append(f"Error creating '{data['title']}': {str(e)}")
-        
-#         return Response({
-#             'message': f'Created {len(created)} blog posts',
-#             'posts': created,
-#             'errors': errors
-#         })

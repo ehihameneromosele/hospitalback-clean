@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.core.cache import cache
 from .models import (
-    Appointment, Vitals, LabResult, MedicalReport, BlogPost,
+    Appointment, Vitals, LabResult, MedicalReport, BlogPost, BlogCategory,
     TestRequest, VitalRequest, Assignment,
 )
 from users.models import Profile
@@ -48,8 +48,6 @@ class TestRequestSerializer(serializers.ModelSerializer):
     assigned_to = serializers.PrimaryKeyRelatedField(
         queryset=Profile.objects.all(), required=False, allow_null=True,
     )
-    
-    # Add this to ensure we get full details when needed
     assigned_to_details = serializers.SerializerMethodField()
 
     class Meta:
@@ -64,7 +62,6 @@ class TestRequestSerializer(serializers.ModelSerializer):
     
     def to_representation(self, instance):
         rep = super().to_representation(instance)
-        # Include the details in the response
         rep['assigned_to'] = self.get_assigned_to_details(instance)
         return rep
 
@@ -139,8 +136,6 @@ class AppointmentSerializer(serializers.ModelSerializer):
     assigned_doctor  = serializers.SerializerMethodField()
     assigned_nurse   = serializers.SerializerMethodField()
     assigned_lab     = serializers.SerializerMethodField()
-    
-    # Add these fields to explicitly include the data
     test_requests_data = serializers.SerializerMethodField()
     vital_requests_data = serializers.SerializerMethodField()
 
@@ -174,7 +169,6 @@ class AppointmentSerializer(serializers.ModelSerializer):
         requests = obj.vital_requests.all()
         return VitalRequestSerializer(requests, many=True).data
 
-    # Keep to_representation but make it safer
     def to_representation(self, instance):
         try:
             cache_key = f"appointment_rep_{instance.id}"
@@ -183,7 +177,6 @@ class AppointmentSerializer(serializers.ModelSerializer):
                 return cached
             rep = super().to_representation(instance)
         
-            # Add the data we already have from serializer methods
             rep['test_requests'] = rep.get('test_requests_data', [])
             rep['vital_requests'] = rep.get('vital_requests_data', [])
 
@@ -195,7 +188,6 @@ class AppointmentSerializer(serializers.ModelSerializer):
                 logger.warning(f"Error adding vitals to appointment {instance.id}: {e}")
         
             try:
-                # Add lab results
                 lab_results_data = []
                 if hasattr(instance, 'test_requests'):
                     for tr in instance.test_requests.all():
@@ -207,19 +199,16 @@ class AppointmentSerializer(serializers.ModelSerializer):
                     rep['lab_results'] = lab_results_data
             except Exception as e:
                 logger.warning(f"Error adding lab results to appointment {instance.id}: {e}") 
-            # Safely add medical report
             try:
                 if hasattr(instance, 'medical_report'):
                     rep['medical_report'] = MedicalReportSerializer(instance.medical_report).data
             except Exception as e:
                 logger.warning(f"Error adding medical report to appointment {instance.id}: {e}")
-            # Cache for 5 minutes
             cache.set(cache_key, rep, 300)
         
             return rep
         except Exception as e:
             logger.error(f"Critical error in to_representation for appointment {instance.id}: {e}")
-            # Return a minimal representation to prevent frontend crash
             return {
                 'id': instance.id,
                 'name': instance.name,
@@ -244,6 +233,26 @@ class AppointmentDetailSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# BLOG CATEGORY SERIALIZER
+# ──────────────────────────────────────────────────────────────────────────────
+
+class BlogCategorySerializer(serializers.ModelSerializer):
+    post_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = BlogCategory
+        fields = ['id', 'name', 'slug', 'description', 'post_count']
+
+    def get_post_count(self, obj) -> int:
+        """Return published post count for this category."""
+        return obj.posts.filter(published=True).count()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BLOG POST SERIALIZERS
+# ──────────────────────────────────────────────────────────────────────────────
+
 class SubheadingSerializer(serializers.Serializer):
     id           = serializers.IntegerField(read_only=True)
     title        = serializers.CharField()
@@ -266,6 +275,16 @@ class BlogPostListSerializer(serializers.ModelSerializer):
     image_2_url         = serializers.SerializerMethodField()
     author_name         = serializers.CharField(source='author.fullname', read_only=True)
     author_role         = serializers.CharField(source='author.role',     read_only=True)
+    # Nested category object so the frontend has id, name, slug in one payload
+    category            = BlogCategorySerializer(read_only=True)
+    # Write-only: accept category_id on POST/PATCH without needing a full object
+    category_id         = serializers.PrimaryKeyRelatedField(
+        queryset=BlogCategory.objects.all(),
+        source='category',
+        write_only=True,
+        required=False,
+        allow_null=True,
+    )
 
     class Meta:
         model  = BlogPost
@@ -274,12 +293,12 @@ class BlogPostListSerializer(serializers.ModelSerializer):
             'featured_image_url', 'image_1_url', 'image_2_url',
             'published', 'created_at', 'table_of_contents',
             'subheadings', 'author_name', 'author_role',
+            'category', 'category_id',
         ]
 
     def get_subheadings(self, obj):
         return [{**s, 'id': i + 1} for i, s in enumerate(obj.subheadings)]
 
-    # FIX: use _safe_url(field) instead of hardcoded f-string.
     def get_featured_image_url(self, obj):
         return _safe_url(obj.featured_image)
 
@@ -298,6 +317,14 @@ class BlogPostSerializer(serializers.ModelSerializer):
     image_2_url        = serializers.SerializerMethodField()
     author_name        = serializers.CharField(source='author.fullname', read_only=True)
     author_role        = serializers.CharField(source='author.role',     read_only=True)
+    category           = BlogCategorySerializer(read_only=True)
+    category_id        = serializers.PrimaryKeyRelatedField(
+        queryset=BlogCategory.objects.all(),
+        source='category',
+        write_only=True,
+        required=False,
+        allow_null=True,
+    )
 
     class Meta:
         model  = BlogPost
@@ -307,10 +334,10 @@ class BlogPostSerializer(serializers.ModelSerializer):
             'featured_image_url', 'image_1_url', 'image_2_url',
             'published', 'published_date', 'created_at', 'updated_at',
             'slug', 'table_of_contents', 'enable_toc', 'subheadings',
+            'category', 'category_id',
         ]
         read_only_fields = ['slug', 'table_of_contents', 'subheadings', 'author']
 
-    # FIX: use _safe_url(field) — no more hardcoded f-string S3 paths.
     def get_featured_image_url(self, obj):
         return _safe_url(obj.featured_image)
 
@@ -322,10 +349,52 @@ class BlogPostSerializer(serializers.ModelSerializer):
 
 
 class BlogPostCreateSerializer(serializers.ModelSerializer):
+    """
+    Used for POST (create) and PATCH (update) operations.
+    Accepts category_id as a writable integer field so multipart/form-data
+    submissions from the BlogEditor can set the category.
+    """
+    category_id = serializers.PrimaryKeyRelatedField(
+        queryset=BlogCategory.objects.all(),
+        source='category',
+        required=False,
+        allow_null=True,
+    )
+
     class Meta:
         model  = BlogPost
-        fields = '__all__'
-        read_only_fields = ['author']
+        # Exclude the read-only reverse relation so DRF doesn't complain
+        exclude = ['category']
+        read_only_fields = ['author', 'slug', 'table_of_contents', 'subheadings']
+
+    def to_representation(self, instance):
+        """On response, include full category object for convenience."""
+        rep = super().to_representation(instance)
+        rep['category'] = BlogCategorySerializer(instance.category).data if instance.category else None
+        return rep
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BLOG SEARCH SUGGESTION SERIALIZER
+# ──────────────────────────────────────────────────────────────────────────────
+
+class BlogPostSuggestionSerializer(serializers.ModelSerializer):
+    """
+    Lightweight serializer for search autocomplete suggestions.
+    Returns only what the dropdown needs: id, title, slug, category name.
+    """
+    category_name = serializers.SerializerMethodField()
+    category_slug = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = BlogPost
+        fields = ['id', 'title', 'slug', 'category_name', 'category_slug']
+
+    def get_category_name(self, obj) -> str:
+        return obj.category.name if obj.category else 'General Health'
+
+    def get_category_slug(self, obj) -> str:
+        return obj.category.slug if obj.category else ''
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -340,8 +409,6 @@ class StaffProfileSerializer(serializers.ModelSerializer):
         model  = Profile
         fields = ['id', 'user', 'fullname', 'phone', 'gender', 'profile_pix', 'role']
 
-    # FIX: use _safe_url(field) — no more hardcoded f-string S3 paths.
-    # Previously this returned an unsigned URL that got 403 on private buckets.
     def get_profile_pix(self, obj):
         return _safe_url(obj.profile_pix)
 

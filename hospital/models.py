@@ -77,7 +77,7 @@ class Appointment(models.Model):
             models.Index(fields=['status', 'booked_at']),
             models.Index(fields=['patient', 'status']),
             models.Index(fields=['doctor', 'status']),
-            models.Index(fields=['booked_at']),  # For date range queries
+            models.Index(fields=['booked_at']),
             models.Index(fields=['patient', '-booked_at']),
             models.Index(fields=['doctor', '-booked_at']),
         ]
@@ -245,6 +245,32 @@ class MedicalReport(models.Model):
         appt.status = 'COMPLETED'
         appt.save()
 
+
+# ==================== BLOG CATEGORY MODEL ====================
+
+class BlogCategory(models.Model):
+    """
+    Predefined blog categories. Seeded via migration or admin.
+    Admins can add more categories from the Django admin panel.
+    """
+    name = models.CharField(max_length=100, unique=True)
+    slug = models.SlugField(max_length=120, unique=True, blank=True)
+    description = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name_plural = 'Blog Categories'
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            self.slug = slugify(self.name)
+        super().save(*args, **kwargs)
+
+
 # ==================== BLOG POST MODEL ====================
 
 class BlogPost(models.Model):
@@ -252,6 +278,15 @@ class BlogPost(models.Model):
     description = models.TextField()
     content = models.TextField()
     author = models.ForeignKey(Profile, on_delete=models.CASCADE, related_name='blog_posts')
+
+    # ── Category (nullable so existing posts don't break) ──────────────────
+    category = models.ForeignKey(
+        BlogCategory,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='posts',
+    )
 
     featured_image = models.ImageField(upload_to='blog_images/', null=True, blank=True)
     image_1 = models.ImageField(upload_to='blog_images/', null=True, blank=True)
@@ -276,6 +311,8 @@ class BlogPost(models.Model):
             models.Index(fields=['author', 'published']),
             models.Index(fields=['-created_at']),
             models.Index(fields=['title']),
+            # New: fast category-filtered listing
+            models.Index(fields=['category', 'published', '-published_date']),
         ]
 
     def __str__(self):
@@ -289,7 +326,6 @@ class BlogPost(models.Model):
             base_slug = slugify(self.title)
             slug = base_slug
             counter = 1
-            # Check for existing slugs and append number if needed
             while BlogPost.objects.filter(slug=slug).exists():
                 slug = f"{base_slug}-{counter}"
                 counter += 1
@@ -301,7 +337,6 @@ class BlogPost(models.Model):
             self.extract_subheadings()
 
         super().save(*args, **kwargs)
-        
 
     def generate_table_of_contents(self):
         import re
@@ -354,7 +389,8 @@ class BlogPost(models.Model):
 
         self.subheadings = structured[:6]
 
-    # ==================== SIMPLE IMAGE UPLOAD FUNCTION ====================
+
+# ==================== SIMPLE IMAGE UPLOAD FUNCTION ====================
 
 def upload_image_to_s3_simple(image_field, blog_post, field_name):
     """Simple, reliable image upload to S3 - FIXED VERSION"""
@@ -370,7 +406,6 @@ def upload_image_to_s3_simple(image_field, blog_post, field_name):
         return False
     
     try:
-        # Setup S3 client
         s3 = boto3.client(
             's3',
             aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
@@ -380,11 +415,8 @@ def upload_image_to_s3_simple(image_field, blog_post, field_name):
         
         bucket_name = settings.AWS_STORAGE_BUCKET_NAME
         
-        # IMPORTANT: Get the actual file path from Django storage
-        # For default_storage, get the file path relative to media root
         from django.core.files.storage import default_storage
         
-        # Extract the path relative to media/ directory
         if image_field.name.startswith('blog_images/'):
             s3_key = f"media/{image_field.name}"
         else:
@@ -392,7 +424,6 @@ def upload_image_to_s3_simple(image_field, blog_post, field_name):
         
         logger.info(f"[UPLOAD] Processing {field_name}: {image_field.name} -> S3 Key: {s3_key}")
         
-        # Check if already exists in S3 (skip if it's an actual image)
         try:
             existing = s3.head_object(Bucket=bucket_name, Key=s3_key)
             metadata = existing.get('Metadata', {})
@@ -400,18 +431,15 @@ def upload_image_to_s3_simple(image_field, blog_post, field_name):
                 logger.info(f"[SKIP] Already exists in S3 with actual_image=true: {s3_key}")
                 return True
         except:
-            pass  # File doesn't exist, continue upload
+            pass
         
-        # Get the actual file from Django storage
         if default_storage.exists(image_field.name):
             logger.info(f"[FOUND] File exists in default storage: {image_field.name}")
             
-            # Open file from Django storage
             with default_storage.open(image_field.name, 'rb') as f:
                 file_content = f.read()
                 file_size = len(file_content)
                 
-                # Determine content type from filename
                 filename = image_field.name.lower()
                 if filename.endswith('.png'):
                     content_type = 'image/png'
@@ -422,7 +450,6 @@ def upload_image_to_s3_simple(image_field, blog_post, field_name):
                 else:
                     content_type = 'application/octet-stream'
                 
-                # Upload to S3
                 logger.info(f"[UPLOADING] {s3_key} ({file_size} bytes)...")
                 
                 s3.put_object(
@@ -446,16 +473,13 @@ def upload_image_to_s3_simple(image_field, blog_post, field_name):
         else:
             logger.warning(f"[MISSING] File not in default storage: {image_field.name}")
             
-            # Try to get file from the ImageField directly
             try:
                 logger.info(f"[ATTEMPT] Trying to read from ImageField directly...")
                 
-                # Reset file pointer to beginning
                 if hasattr(image_field, 'file') and image_field.file:
                     image_field.file.seek(0)
                     file_content = image_field.file.read()
                     
-                    # Determine content type
                     filename = image_field.name.lower()
                     if filename.endswith('.png'):
                         content_type = 'image/png'
@@ -466,7 +490,6 @@ def upload_image_to_s3_simple(image_field, blog_post, field_name):
                     else:
                         content_type = 'application/octet-stream'
                     
-                    # Upload to S3
                     logger.info(f"[UPLOADING-DIRECT] {s3_key} ({len(file_content)} bytes)...")
                     
                     s3.put_object(
@@ -498,6 +521,7 @@ def upload_image_to_s3_simple(image_field, blog_post, field_name):
         logger.error(f"[TRACEBACK] {traceback.format_exc()}")
         return False
 
+
 # ==================== SINGLE SIGNAL HANDLER ====================
 
 @receiver(post_save, sender=BlogPost)
@@ -512,23 +536,19 @@ def handle_blog_post_save(sender, instance, created, **kwargs):
     
     logger.info(f"📝 Processing images for blog post: {instance.id} - {instance.title}")
     
-    # List of image fields to process
     image_fields = [
         ('featured_image', instance.featured_image),
         ('image_1', instance.image_1),
         ('image_2', instance.image_2),
     ]
     
-    # Process each image
     for field_name, image_field in image_fields:
         if image_field and image_field.name:
             logger.info(f"  ⬆️ Uploading {field_name}: {image_field.name}")
             
-            # Get filename and create S3 key
             filename = os.path.basename(image_field.name)
             s3_key = f"media/blog_images/{filename}"
             
-            # Upload to S3 (file already saved locally by Django)
             success, result = upload_to_s3(
                 image_field,
                 s3_key,
@@ -543,5 +563,3 @@ def handle_blog_post_save(sender, instance, created, **kwargs):
                 logger.info(f"  ✅ Uploaded to S3: {result}")
             else:
                 logger.error(f"  ❌ Failed to upload: {result}")
-
-                
