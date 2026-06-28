@@ -94,6 +94,49 @@ DATABASES = {
     )
 }
 
+# Add this near your DATABASE_URL parsing
+import socket
+
+def get_database_config(DATABASE_URL):
+    """Configure database with Render-specific optimizations"""
+    db_config = dj_database_url.parse(
+        DATABASE_URL,
+        conn_max_age=600,
+        conn_health_checks=True,
+    )
+    
+    # Render uses PostgreSQL internally
+    if 'postgresql' in db_config['ENGINE']:
+        db_config['OPTIONS'] = db_config.get('OPTIONS', {})
+        db_config['OPTIONS'].update({
+            'sslmode': 'require',
+            'connect_timeout': 10,
+            'keepalives': 1,
+            'keepalives_idle': 30,
+            'keepalives_interval': 10,
+            'keepalives_count': 5,
+            'options': '-c statement_timeout=30000',
+        })
+        
+        # Log the host for debugging
+        host = db_config.get('HOST', 'unknown')
+        logger.info(f"📊 PostgreSQL host: {host}")
+        
+        # Test DNS resolution
+        try:
+            socket.getaddrinfo(host, 5432)
+            logger.info(f"✅ DNS resolution successful for {host}")
+        except socket.gaierror as e:
+            logger.error(f"❌ DNS resolution failed for {host}: {e}")
+            
+    return db_config
+
+# Replace your current DATABASES config with:
+DATABASES = {
+    'default': get_database_config(DATABASE_URL)
+}
+
+
 db_engine = DATABASES['default']['ENGINE']
 if 'postgresql' in db_engine:
     DATABASES['default']['OPTIONS'] = {
@@ -340,6 +383,27 @@ if SOCIAL_AUTH_GOOGLE_OAUTH2_KEY and SOCIAL_AUTH_GOOGLE_OAUTH2_SECRET:
     logger.info("✅ Google OAuth configured")
 else:
     logger.warning("⚠️ Google OAuth credentials missing")
+
+# Add to settings.py
+import time
+
+class DatabaseConnectionRetry:
+    """Retry database connection for Render free tier cold starts"""
+    
+    @staticmethod
+    def connect_with_retry(max_retries=5, delay=5):
+        """Attempt database connection with retries"""
+        for attempt in range(max_retries):
+            try:
+                from django.db import connections
+                connections['default'].cursor()
+                logger.info(f"✅ Database connection successful on attempt {attempt + 1}")
+                return True
+            except Exception as e:
+                logger.warning(f"⚠️ Database connection attempt {attempt + 1} failed: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+        return False
 
 # ========== LOGGING ==========
 LOGGING = {

@@ -3,7 +3,10 @@ services:
   - type: web
     name: hospital-backend
     runtime: python
-    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
+    buildCommand: |
+      pip install -r requirements.txt
+      python manage.py migrate --noinput
+      python manage.py collectstatic --noinput
     startCommand: gunicorn api.wsgi:application --workers 4 --worker-class sync --timeout 180 --max-requests 1000 --max-requests-jitter 100 --preload
     envVars:
       - key: DATABASE_URL
