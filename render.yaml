@@ -3,10 +3,7 @@ services:
   - type: web
     name: hospital-backend
     runtime: python
-    buildCommand: |
-      pip install -r requirements.txt
-      python manage.py migrate --noinput
-      python manage.py collectstatic --noinput
+    buildCommand: bash render-build.sh
     startCommand: gunicorn api.wsgi:application --workers 4 --worker-class sync --timeout 180 --max-requests 1000 --max-requests-jitter 100 --preload
     envVars:
       - key: DATABASE_URL
@@ -24,6 +21,8 @@ services:
         value: false
       - key: USE_S3
         value: true
+      - key: PYTHON_VERSION
+        value: 3.12.8
 
   - type: worker
     name: hospital-worker
