@@ -6,7 +6,10 @@ from .models import (
     MedicalReport, BlogPost, BlogCategory,
 )
 from users.models import Profile
-from django.db import models, transaction
+from django.db import models, transaction, connection
+from django.http import JsonResponse
+from django.views.decorators.http import require_GET
+import time
 from .serializers import (
     AppointmentSerializer, TestRequestSerializer, VitalRequestSerializer,
     VitalsSerializer, LabResultSerializer, MedicalReportSerializer,
@@ -27,6 +30,51 @@ from api.settings import safe_cache_delete_pattern
 
 import logging
 logger = logging.getLogger(__name__)
+
+@require_GET
+def health_check(request):
+    """
+    Full stack health check — verifies server + database are both alive.
+    Called by UptimeRobot every 5 min to prevent Render free tier sleep.
+    Keeps login, registration, blog, and all endpoints warm simultaneously.
+    """
+    db_ok = False
+    db_latency = None
+
+    try:
+        start = time.time()
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+        db_latency = round((time.time() - start) * 1000, 2)  # ms
+        db_ok = True
+    except Exception as e:
+        db_ok = False
+
+    status_code = 200 if db_ok else 503
+
+    return JsonResponse(
+        {
+            'status':      'ok' if db_ok else 'degraded',
+            'server':      'alive',
+            'database':    'connected' if db_ok else 'unreachable',
+            'db_latency_ms': db_latency,
+            'timestamp':   int(time.time()),
+            'service':     'Etha-Atlantic Memorial Hospital API',
+            'endpoints': {
+                'auth': {
+                    'login':    '/api/auth/login/',
+                    'register': '/api/auth/register/',
+                    'status':   'warm',
+                },
+                'blog': {
+                    'latest':  '/api/hospital/blog/latest/',
+                    'status':  'warm',
+                },
+            },
+        },
+        status=status_code,
+    )
 
 class AppointmentCreateView(generics.CreateAPIView):
     permission_classes = [permissions.IsAuthenticated, IsRole]

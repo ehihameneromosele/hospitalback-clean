@@ -1,5 +1,6 @@
 # settings.py - FIXED
 import os
+import time
 import logging
 from pathlib import Path
 from decouple import config, Csv
@@ -84,177 +85,115 @@ TEMPLATES = [
 ]
 
 # ========== DATABASE ==========
-DATABASE_URL = config('DATABASE_URL', default='sqlite:///db.sqlite3')
+# Use DATABASE_URL env var when set (Render injects this automatically).
+# Falls back to SQLite locally when DATABASE_URL is absent from .env.
+DATABASE_URL = os.environ.get('DATABASE_URL')
 
-DATABASES = {
-    'default': dj_database_url.parse(
-        DATABASE_URL,
-        conn_max_age=600,
-        conn_health_checks=True,
-    )
-}
-
-# Add this near your DATABASE_URL parsing
-import socket
-
-def get_database_config(DATABASE_URL):
-    """Configure database with Render-specific optimizations"""
-    db_config = dj_database_url.parse(
-        DATABASE_URL,
-        conn_max_age=600,
-        conn_health_checks=True,
-    )
-    
-    # Render uses PostgreSQL internally
-    if 'postgresql' in db_config['ENGINE']:
-        db_config['OPTIONS'] = db_config.get('OPTIONS', {})
-        db_config['OPTIONS'].update({
-            'sslmode': 'require',
-            'connect_timeout': 10,
-            'keepalives': 1,
-            'keepalives_idle': 30,
-            'keepalives_interval': 10,
-            'keepalives_count': 5,
-            'options': '-c statement_timeout=30000',
-        })
-        
-        # Log the host for debugging
-        host = db_config.get('HOST', 'unknown')
-        logger.info(f"📊 PostgreSQL host: {host}")
-        
-        # Test DNS resolution
-        try:
-            socket.getaddrinfo(host, 5432)
-            logger.info(f"✅ DNS resolution successful for {host}")
-        except socket.gaierror as e:
-            logger.error(f"❌ DNS resolution failed for {host}: {e}")
-            
-    return db_config
-
-# Replace your current DATABASES config with:
-DATABASES = {
-    'default': get_database_config(DATABASE_URL)
-}
-
-
-db_engine = DATABASES['default']['ENGINE']
-if 'postgresql' in db_engine:
-    DATABASES['default']['OPTIONS'] = {
-        'sslmode': 'require'
+if DATABASE_URL:
+    DATABASES = {
+        'default': dj_database_url.config(
+            default=DATABASE_URL,
+            conn_max_age=600,
+            conn_health_checks=True,
+        )
     }
-
-logger.info(f"📊 Using database engine: {db_engine}")
-if 'sqlite' in db_engine:
-    logger.info(f"   SQLite database path: {DATABASES['default']['NAME']}")
+    logger.info("✅ Using PostgreSQL via DATABASE_URL")
 else:
-    logger.info(f"   PostgreSQL database host: {DATABASES['default'].get('HOST', 'unknown')}")
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME':   BASE_DIR / 'db.sqlite3',
+        }
+    }
+    logger.info("⚠️  DATABASE_URL not set — using local SQLite fallback")
 
-if not DEBUG and 'postgresql' in db_engine:
-    if 'OPTIONS' not in DATABASES['default']:
-        DATABASES['default']['OPTIONS'] = {}
-    DATABASES['default']['OPTIONS'].update({
-        'connect_timeout': 10,
-        'keepalives': 1,
-        'keepalives_idle': 30,
-        'keepalives_interval': 10,
-        'keepalives_count': 5,
-        'options': '-c statement_timeout=30s',
-    })
-
-EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
-EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
-EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
-EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+# ========== EMAIL ==========
+EMAIL_BACKEND    = config('EMAIL_BACKEND',    default='django.core.mail.backends.smtp.EmailBackend')
+EMAIL_HOST       = config('EMAIL_HOST',       default='smtp.gmail.com')
+EMAIL_PORT       = config('EMAIL_PORT',       default=587, cast=int)
+EMAIL_USE_TLS    = config('EMAIL_USE_TLS',    default=True, cast=bool)
+EMAIL_HOST_USER  = config('EMAIL_HOST_USER',  default='')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 
 # ========== CACHE ==========
-REDIS_URL = config('REDIS_URL', default='')
-
-# REMOVED: hiredis detection block - HiredisParser no longer exists in redis-py 5.x
-# django_redis will use the default pure-Python parser automatically
+# Uses Redis on Render (REDIS_URL env var is set there).
+# Falls back to local memory cache when REDIS_URL is absent —
+# no Redis installation required for local development.
+REDIS_URL = os.environ.get('REDIS_URL', '')
 
 if REDIS_URL:
-    CACHE_OPTIONS = {
-        'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-        'CONNECTION_POOL_CLASS': 'redis.BlockingConnectionPool',
-        'CONNECTION_POOL_CLASS_KWARGS': {
-            'max_connections': 50,
-            'timeout': 20,
-        },
-        'COMPRESSOR': 'django_redis.compressors.zlib.ZlibCompressor',
-        'COMPRESS_MIN_LEN': 1024,
-        'SERIALIZER': 'django_redis.serializers.json.JSONSerializer',
-        'PICKLE_VERSION': -1,
-        # REMOVED: 'PARSER_CLASS' - HiredisParser was removed in redis-py 5.x
-    }
-    
     CACHES = {
         'default': {
-            'BACKEND': 'django_redis.cache.RedisCache',
+            'BACKEND':  'django_redis.cache.RedisCache',
             'LOCATION': REDIS_URL,
-            'OPTIONS': CACHE_OPTIONS,
+            'OPTIONS': {
+                'CLIENT_CLASS':          'django_redis.client.DefaultClient',
+                'SOCKET_CONNECT_TIMEOUT': 5,
+                'SOCKET_TIMEOUT':         5,
+                'IGNORE_EXCEPTIONS':      True,  # cache miss on Redis error, never crash
+            },
             'KEY_PREFIX': 'hospital',
-            'TIMEOUT': 300,
-            'VERSION': 1,
+            'TIMEOUT':    300,
         }
     }
-    
-    SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
-    SESSION_CACHE_ALIAS = 'default'
-    logger.info("✅ Redis cache configured successfully")
+    SESSION_ENGINE       = 'django.contrib.sessions.backends.cache'
+    SESSION_CACHE_ALIAS  = 'default'
+    logger.info("✅ Redis cache configured")
 else:
     CACHES = {
         'default': {
-            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-            'LOCATION': 'unique-snowflake',
+            'BACKEND':  'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'hospital-local',
         }
     }
     SESSION_ENGINE = 'django.contrib.sessions.backends.db'
-    logger.info("⚠️ No Redis URL found - using local memory cache")
+    logger.info("⚠️  REDIS_URL not set — using local memory cache")
 
+# ========== CACHE UTILITY ==========
 def safe_cache_delete_pattern(pattern: str) -> None:
+    """Delete a cache key pattern — silently skips if backend doesn't support it."""
     from django.core.cache import cache
     try:
         cache.delete_pattern(pattern)
-        logger.debug(f"Deleted cache pattern: {pattern}")
+        logger.debug("Deleted cache pattern: %s", pattern)
     except AttributeError:
+        # LocMemCache doesn't support delete_pattern — safe to ignore locally
         pass
     except Exception as e:
-        logger.error(f"Error deleting cache pattern {pattern}: {e}")
+        logger.error("Error deleting cache pattern %s: %s", pattern, e)
 
 # ========== CELERY ==========
-CELERY_BROKER_URL = REDIS_URL if REDIS_URL else 'memory://'
-CELERY_RESULT_BACKEND = REDIS_URL if REDIS_URL else 'cache+memory://'
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
-CELERY_TIMEZONE = TIME_ZONE
-CELERY_TASK_ALWAYS_EAGER = not bool(REDIS_URL)
-CELERY_TASK_EAGER_PROPAGATES = True
-CELERY_WORKER_MAX_TASKS_PER_CHILD = 1000
-CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_BROKER_URL         = REDIS_URL if REDIS_URL else 'memory://'
+CELERY_RESULT_BACKEND     = REDIS_URL if REDIS_URL else 'cache+memory://'
+CELERY_ACCEPT_CONTENT     = ['json']
+CELERY_TASK_SERIALIZER    = 'json'
+CELERY_RESULT_SERIALIZER  = 'json'
+CELERY_TIMEZONE           = TIME_ZONE
+CELERY_TASK_ALWAYS_EAGER  = not bool(REDIS_URL)   # run tasks inline locally
+CELERY_TASK_EAGER_PROPAGATES       = True
+CELERY_WORKER_MAX_TASKS_PER_CHILD  = 1000
+CELERY_WORKER_PREFETCH_MULTIPLIER  = 1
 
 if REDIS_URL:
     logger.info("✅ Celery configured with Redis broker")
 else:
-    logger.warning("⚠️ No Redis URL found - Celery tasks will run synchronously")
+    logger.warning("⚠️  No Redis URL — Celery tasks run synchronously (local mode)")
 
 # ========== STATIC FILES ==========
-STATIC_URL = '/static/'
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
-WHITENOISE_USE_FINDERS = True
-WHITENOISE_MANIFEST_STRICT = False
+STATIC_URL    = '/static/'
+STATIC_ROOT   = os.path.join(BASE_DIR, 'staticfiles')
+STATICFILES_STORAGE      = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+WHITENOISE_USE_FINDERS   = True
+WHITENOISE_MANIFEST_STRICT  = False
 WHITENOISE_ALLOW_ALL_ORIGINS = True
 
-# ========== MEDIA FILES ==========
+# ========== MEDIA / S3 ==========
 USE_S3 = config('USE_S3', default=False, cast=bool)
 
-AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='')
-AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='')
+AWS_ACCESS_KEY_ID       = config('AWS_ACCESS_KEY_ID',       default='')
+AWS_SECRET_ACCESS_KEY   = config('AWS_SECRET_ACCESS_KEY',   default='')
 AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME', default='')
-AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='eu-north-1')
+AWS_S3_REGION_NAME      = config('AWS_S3_REGION_NAME',      default='eu-north-1')
 
 AWS_CREDENTIALS_PROVIDED = all([
     AWS_ACCESS_KEY_ID,
@@ -263,45 +202,39 @@ AWS_CREDENTIALS_PROVIDED = all([
 ])
 
 if AWS_CREDENTIALS_PROVIDED and USE_S3:
-    logger.info('✅ AWS S3 credentials found — using S3 storage')
-
-    AWS_S3_USE_SSL = True
-    AWS_S3_SECURE_URLS = True
-    AWS_S3_FILE_OVERWRITE = False
-    AWS_S3_REGION_NAME = AWS_S3_REGION_NAME
+    logger.info('✅ AWS S3 storage active')
+    AWS_S3_USE_SSL          = True
+    AWS_S3_SECURE_URLS      = True
+    AWS_S3_FILE_OVERWRITE   = False
     AWS_S3_SIGNATURE_VERSION = 's3v4'
-        
-    AWS_DEFAULT_ACL = 'public-read'
-    AWS_QUERYSTRING_AUTH = False  # Disable query string auth for public access
-    AWS_S3_OBJECT_PARAMETERS = {
-        'CacheControl': 'max-age=86400',
-    }
-
-    DEFAULT_FILE_STORAGE = 'hospital.storage_backends.MediaStorage'
+    AWS_DEFAULT_ACL         = 'public-read'
+    AWS_QUERYSTRING_AUTH    = False
+    AWS_S3_OBJECT_PARAMETERS = {'CacheControl': 'max-age=86400'}
+    DEFAULT_FILE_STORAGE    = 'hospital.storage_backends.MediaStorage'
     MEDIA_URL = f'https://{AWS_STORAGE_BUCKET_NAME}.s3.{AWS_S3_REGION_NAME}.amazonaws.com/media/'
 else:
-    logger.warning('⚠️ Using local filesystem storage')
+    logger.warning('⚠️  S3 not configured — using local filesystem storage')
     DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
-    MEDIA_URL = '/media/'
+    MEDIA_URL  = '/media/'
     MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
-BASE_URL = config('BASE_URL', default='https://hospitalback-clean-0fre.onrender.com')
+BASE_URL     = config('BASE_URL',     default='https://hospitalback-clean-0fre.onrender.com')
 FRONTEND_URL = config('FRONTEND_URL', default='https://ettahospitalclone.vercel.app')
 
 # ========== JWT ==========
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
-    'ROTATE_REFRESH_TOKENS': True,
+    'ACCESS_TOKEN_LIFETIME':   timedelta(minutes=15),
+    'REFRESH_TOKEN_LIFETIME':  timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS':   True,
     'BLACKLIST_AFTER_ROTATION': True,
-    'UPDATE_LAST_LOGIN': True,
-    'ALGORITHM': 'HS256',
-    'SIGNING_KEY': SECRET_KEY,
-    'VERIFYING_KEY': None,
-    'AUTH_HEADER_TYPES': ('Bearer',),
-    'AUTH_HEADER_NAME': 'HTTP_AUTHORIZATION',
-    'USER_ID_FIELD': 'id',
-    'USER_ID_CLAIM': 'user_id',
+    'UPDATE_LAST_LOGIN':       True,
+    'ALGORITHM':               'HS256',
+    'SIGNING_KEY':             SECRET_KEY,
+    'VERIFYING_KEY':           None,
+    'AUTH_HEADER_TYPES':       ('Bearer',),
+    'AUTH_HEADER_NAME':        'HTTP_AUTHORIZATION',
+    'USER_ID_FIELD':           'id',
+    'USER_ID_CLAIM':           'user_id',
 }
 
 # ========== DRF ==========
@@ -335,7 +268,6 @@ if not DEBUG:
     REST_FRAMEWORK['DEFAULT_RENDERER_CLASSES'] = [
         'rest_framework.renderers.JSONRenderer',
     ]
-    logger.info("✅ DRF configured for production (JSON only)")
 
 # ========== CORS ==========
 CORS_ALLOWED_ORIGINS = config(
@@ -358,16 +290,15 @@ CSRF_TRUSTED_ORIGINS = config(
 
 # ========== SESSION SECURITY ==========
 if not DEBUG:
-    SESSION_COOKIE_SECURE = True
-    SESSION_COOKIE_HTTPONLY = True
-    SESSION_COOKIE_SAMESITE = 'Lax'
-    CSRF_COOKIE_SECURE = True
-    CSRF_COOKIE_SAMESITE = 'Lax'
-    SECURE_SSL_REDIRECT = True
-    SECURE_HSTS_SECONDS = 31536000
+    SESSION_COOKIE_SECURE        = True
+    SESSION_COOKIE_HTTPONLY      = True
+    SESSION_COOKIE_SAMESITE      = 'Lax'
+    CSRF_COOKIE_SECURE           = True
+    CSRF_COOKIE_SAMESITE         = 'Lax'
+    SECURE_SSL_REDIRECT          = True
+    SECURE_HSTS_SECONDS          = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-    SECURE_HSTS_PRELOAD = True
-    logger.info("✅ Security middleware configured for production")
+    SECURE_HSTS_PRELOAD          = True
 
 # ========== SOCIAL AUTH ==========
 AUTHENTICATION_BACKENDS = (
@@ -375,34 +306,35 @@ AUTHENTICATION_BACKENDS = (
     'django.contrib.auth.backends.ModelBackend',
 )
 
-SOCIAL_AUTH_GOOGLE_OAUTH2_KEY = config('SOCIAL_AUTH_GOOGLE_OAUTH2_KEY', default='')
+SOCIAL_AUTH_GOOGLE_OAUTH2_KEY    = config('SOCIAL_AUTH_GOOGLE_OAUTH2_KEY',    default='')
 SOCIAL_AUTH_GOOGLE_OAUTH2_SECRET = config('SOCIAL_AUTH_GOOGLE_OAUTH2_SECRET', default='')
-SOCIAL_AUTH_GOOGLE_OAUTH2_SCOPE = ['email', 'profile']
+SOCIAL_AUTH_GOOGLE_OAUTH2_SCOPE  = ['email', 'profile']
 
-if SOCIAL_AUTH_GOOGLE_OAUTH2_KEY and SOCIAL_AUTH_GOOGLE_OAUTH2_SECRET:
-    logger.info("✅ Google OAuth configured")
-else:
-    logger.warning("⚠️ Google OAuth credentials missing")
-
-# Add to settings.py
-import time
-
+# ========== DB CONNECTION RETRY (for transient drops) ==========
 class DatabaseConnectionRetry:
-    """Retry database connection for Render free tier cold starts"""
-    
+    """
+    Retries a dropped DB connection with exponential backoff.
+    This is NOT a cold-start solution — use UptimeRobot for that.
+    """
     @staticmethod
-    def connect_with_retry(max_retries=5, delay=5):
-        """Attempt database connection with retries"""
+    def connect_with_retry(max_retries: int = 8, initial_delay: float = 2.0) -> bool:
+        from django.db import connections
+        delay = initial_delay
         for attempt in range(max_retries):
             try:
-                from django.db import connections
-                connections['default'].cursor()
-                logger.info(f"✅ Database connection successful on attempt {attempt + 1}")
+                conn = connections['default']
+                conn.ensure_connection()
+                logger.info("✅ DB connected on attempt %d", attempt + 1)
                 return True
-            except Exception as e:
-                logger.warning(f"⚠️ Database connection attempt {attempt + 1} failed: {e}")
+            except Exception as exc:
+                logger.warning(
+                    "⚠️  DB attempt %d/%d failed: %s — retrying in %.0fs",
+                    attempt + 1, max_retries, exc, delay,
+                )
                 if attempt < max_retries - 1:
                     time.sleep(delay)
+                    delay = min(delay * 2, 60)   # cap at 60 s per wait
+        logger.error("❌ DB connection failed after %d retries", max_retries)
         return False
 
 # ========== LOGGING ==========
@@ -421,31 +353,31 @@ LOGGING = {
     },
     'handlers': {
         'console': {
-            'class': 'logging.StreamHandler',
+            'class':     'logging.StreamHandler',
             'formatter': 'verbose',
         },
     },
     'root': {
         'handlers': ['console'],
-        'level': 'INFO',
+        'level':    'INFO',
     },
     'loggers': {
         'django': {
-            'handlers': ['console'],
-            'level': 'INFO',
+            'handlers':  ['console'],
+            'level':     'INFO',
             'propagate': False,
         },
         'django.db.backends': {
             'level': 'WARNING',
         },
         'hospital': {
-            'handlers': ['console'],
-            'level': 'DEBUG' if DEBUG else 'INFO',
+            'handlers':  ['console'],
+            'level':     'DEBUG' if DEBUG else 'INFO',
             'propagate': False,
         },
         'users': {
-            'handlers': ['console'],
-            'level': 'DEBUG' if DEBUG else 'INFO',
+            'handlers':  ['console'],
+            'level':     'DEBUG' if DEBUG else 'INFO',
             'propagate': False,
         },
     },
@@ -457,13 +389,13 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# ========== STARTUP MESSAGE ==========
+# ========== STARTUP BANNER ==========
 logger.info("=" * 50)
 logger.info("🚀 Hospital Backend Starting Up")
-logger.info(f"🔧 DEBUG Mode: {DEBUG}")
-logger.info(f"🌍 Allowed Hosts: {ALLOWED_HOSTS}")
-logger.info(f"🗄️  Database: {DATABASES['default']['ENGINE']}")
-logger.info(f"⚡ Redis Available: {bool(REDIS_URL)}")
-logger.info(f"☁️  S3 Storage: {AWS_CREDENTIALS_PROVIDED and USE_S3}")
-logger.info(f"🔗 Base URL: {BASE_URL}")
+logger.info("🔧 DEBUG:    %s", DEBUG)
+logger.info("🌍 Hosts:    %s", ALLOWED_HOSTS)
+logger.info("🗄️  Database: %s", DATABASES['default']['ENGINE'])
+logger.info("⚡ Redis:    %s", bool(REDIS_URL))
+logger.info("☁️  S3:       %s", AWS_CREDENTIALS_PROVIDED and USE_S3)
+logger.info("🔗 Base URL: %s", BASE_URL)
 logger.info("=" * 50)
