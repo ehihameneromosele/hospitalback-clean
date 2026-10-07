@@ -43,9 +43,9 @@ def create_s3_placeholder_image(text, width=800, height=400, img_format='JPEG'):
     """
     color_hash = hashlib.md5(text.encode()).hexdigest()[:6]
     img = Image.new('RGB', (width, height), color=f'#{color_hash}')
-    
+
     buffer = io.BytesIO()
-    
+
     if img_format.upper() == 'WEBP':
         img.save(buffer, format='WEBP', quality=85)
         content_type = 'image/webp'
@@ -55,7 +55,7 @@ def create_s3_placeholder_image(text, width=800, height=400, img_format='JPEG'):
     else:
         img.save(buffer, format='JPEG', quality=85)
         content_type = 'image/jpeg'
-    
+
     buffer.seek(0)
     return buffer.getvalue(), content_type
 
@@ -83,24 +83,24 @@ class Appointment(models.Model):
         ]
 
     def __str__(self):
-        return f"Appointment {self.id} - {self.name}"
+        return f"Appointment {self.pk} - {self.name}"
 
     def assign_doctor(self):
         if self.doctor:
             return
-            
+
         available_doctors = Profile.objects.filter(role='DOCTOR', user__is_active=True)
-        
+
         if available_doctors.exists():
             assigned_doctor = random.choice(list(available_doctors))
             self.doctor = assigned_doctor
             self.save()
-            print(f"Assigned doctor {assigned_doctor.fullname} to appointment {self.id}")
+            print(f"Assigned doctor {assigned_doctor.fullname} to appointment {self.pk}")
 
     def save(self, *args, **kwargs):
         is_new = self.pk is None
         super().save(*args, **kwargs)
-        
+
         if is_new and not self.doctor:
             self.assign_doctor()
 
@@ -111,10 +111,10 @@ class Assignment(models.Model):
     assigned_by = models.ForeignKey(Profile, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_staff')
     assigned_at = models.DateTimeField(auto_now_add=True)
     notes = models.TextField(blank=True, null=True)
-    
+
     class Meta:
         unique_together = ['appointment', 'staff', 'role']
-          
+
 class TestRequest(models.Model):
     appointment = models.ForeignKey(Appointment, on_delete=models.CASCADE, related_name='test_requests')
     requested_by = models.ForeignKey(Profile, on_delete=models.SET_NULL, null=True, blank=True, related_name='test_requests_made')
@@ -136,27 +136,27 @@ class TestRequest(models.Model):
     def assign_lab_scientist(self):
         if self.assigned_to:
             return
-            
+
         available_lab_scientists = Profile.objects.filter(role='LAB', user__is_active=True)
-        
+
         if available_lab_scientists.exists():
             assigned_scientist = random.choice(list(available_lab_scientists))
             self.assigned_to = assigned_scientist
             self.save()
-            print(f"Assigned lab scientist {assigned_scientist.fullname} to test request {self.id}")
+            print(f"Assigned lab scientist {assigned_scientist.fullname} to test request {self.pk}")
 
     def save(self, *args, **kwargs):
         is_new = self.pk is None
         super().save(*args, **kwargs)
-        
+
         if is_new and not self.assigned_to:
             self.assign_lab_scientist()
-            
+
         if not is_new and self.status == 'DONE':
             appointment = self.appointment
-            has_vitals = appointment.vital_requests.filter(status='DONE').exists()
-            has_all_tests = appointment.test_requests.filter(status='PENDING').exists()
-            
+            has_vitals = VitalRequest.objects.filter(appointment=appointment, status='DONE').exists()
+            has_all_tests = TestRequest.objects.filter(appointment=appointment, status='PENDING').exists()
+
             if has_vitals and not has_all_tests:
                 appointment.status = 'IN_REVIEW'
                 appointment.save()
@@ -181,25 +181,28 @@ class VitalRequest(models.Model):
     def assign_nurse(self):
         if self.assigned_to:
             return
-            
+
         available_nurses = Profile.objects.filter(role='NURSE', user__is_active=True)
-        
+
         if available_nurses.exists():
             assigned_nurse = random.choice(list(available_nurses))
             self.assigned_to = assigned_nurse
             self.save()
-            print(f"Assigned nurse {assigned_nurse.fullname} to vital request {self.id}")
+            print(f"Assigned nurse {assigned_nurse.fullname} to vital request {self.pk}")
 
     def save(self, *args, **kwargs):
         is_new = self.pk is None
         super().save(*args, **kwargs)
-        
+
         if is_new and not self.assigned_to:
             self.assign_nurse()
-            
+
         if not is_new and self.status == 'DONE':
             appointment = self.appointment
-            pending_tests = appointment.test_requests.filter(status='PENDING').exists()
+            pending_tests = TestRequest.objects.filter(
+                appointment=appointment,
+                status='PENDING',
+            ).exists()
             if not pending_tests:
                 appointment.status = 'IN_REVIEW'
                 appointment.save()
@@ -398,13 +401,13 @@ def upload_image_to_s3_simple(image_field, blog_post, field_name):
     from django.conf import settings
     import logging
     import os
-    
+
     logger = logging.getLogger(__name__)
-    
+
     if not image_field or not hasattr(image_field, 'name') or not image_field.name:
         logger.warning(f"[SKIP] No image field for {field_name}")
         return False
-    
+
     try:
         s3 = boto3.client(
             's3',
@@ -412,18 +415,18 @@ def upload_image_to_s3_simple(image_field, blog_post, field_name):
             aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
             region_name=settings.AWS_S3_REGION_NAME
         )
-        
+
         bucket_name = settings.AWS_STORAGE_BUCKET_NAME
-        
+
         from django.core.files.storage import default_storage
-        
+
         if image_field.name.startswith('blog_images/'):
             s3_key = f"media/{image_field.name}"
         else:
             s3_key = f"media/blog_images/{os.path.basename(image_field.name)}"
-        
+
         logger.info(f"[UPLOAD] Processing {field_name}: {image_field.name} -> S3 Key: {s3_key}")
-        
+
         try:
             existing = s3.head_object(Bucket=bucket_name, Key=s3_key)
             metadata = existing.get('Metadata', {})
@@ -432,14 +435,14 @@ def upload_image_to_s3_simple(image_field, blog_post, field_name):
                 return True
         except:
             pass
-        
+
         if default_storage.exists(image_field.name):
             logger.info(f"[FOUND] File exists in default storage: {image_field.name}")
-            
+
             with default_storage.open(image_field.name, 'rb') as f:
                 file_content = f.read()
                 file_size = len(file_content)
-                
+
                 filename = image_field.name.lower()
                 if filename.endswith('.png'):
                     content_type = 'image/png'
@@ -449,15 +452,14 @@ def upload_image_to_s3_simple(image_field, blog_post, field_name):
                     content_type = 'image/jpeg'
                 else:
                     content_type = 'application/octet-stream'
-                
+
                 logger.info(f"[UPLOADING] {s3_key} ({file_size} bytes)...")
-                
+
                 s3.put_object(
                     Bucket=bucket_name,
                     Key=s3_key,
                     Body=file_content,
                     ContentType=content_type,
-                    ACL='public-read',
                     Metadata={
                         'blog_id': str(blog_post.id),
                         'blog_title': blog_post.title[:100],
@@ -467,19 +469,19 @@ def upload_image_to_s3_simple(image_field, blog_post, field_name):
                         'upload_method': 'django_signal'
                     }
                 )
-                
+
                 logger.info(f"[SUCCESS] Uploaded to S3: {s3_key}")
                 return True
         else:
             logger.warning(f"[MISSING] File not in default storage: {image_field.name}")
-            
+
             try:
                 logger.info(f"[ATTEMPT] Trying to read from ImageField directly...")
-                
+
                 if hasattr(image_field, 'file') and image_field.file:
                     image_field.file.seek(0)
                     file_content = image_field.file.read()
-                    
+
                     filename = image_field.name.lower()
                     if filename.endswith('.png'):
                         content_type = 'image/png'
@@ -489,15 +491,14 @@ def upload_image_to_s3_simple(image_field, blog_post, field_name):
                         content_type = 'image/jpeg'
                     else:
                         content_type = 'application/octet-stream'
-                    
+
                     logger.info(f"[UPLOADING-DIRECT] {s3_key} ({len(file_content)} bytes)...")
-                    
+
                     s3.put_object(
                         Bucket=bucket_name,
                         Key=s3_key,
                         Body=file_content,
                         ContentType=content_type,
-                        ACL='public-read',
                         Metadata={
                             'blog_id': str(blog_post.id),
                             'blog_title': blog_post.title[:100],
@@ -507,14 +508,14 @@ def upload_image_to_s3_simple(image_field, blog_post, field_name):
                             'upload_method': 'direct_imagefield'
                         }
                     )
-                    
+
                     logger.info(f"[SUCCESS] Uploaded from ImageField: {s3_key}")
                     return True
-                    
+
             except Exception as e:
                 logger.error(f"[ERROR] Cannot read from ImageField: {str(e)}")
                 return False
-                
+
     except Exception as e:
         logger.error(f"[ERROR] Failed to upload {image_field.name if image_field else 'unknown'}: {str(e)}")
         import traceback
@@ -530,25 +531,25 @@ def handle_blog_post_save(sender, instance, created, **kwargs):
     import logging
     logger = logging.getLogger(__name__)
     from hospital.utils import upload_to_s3
-    
+
     if kwargs.get('raw', False) or kwargs.get('update_fields'):
         return
-    
+
     logger.info(f"📝 Processing images for blog post: {instance.id} - {instance.title}")
-    
+
     image_fields = [
         ('featured_image', instance.featured_image),
         ('image_1', instance.image_1),
         ('image_2', instance.image_2),
     ]
-    
+
     for field_name, image_field in image_fields:
         if image_field and image_field.name:
             logger.info(f"  ⬆️ Uploading {field_name}: {image_field.name}")
-            
+
             filename = os.path.basename(image_field.name)
             s3_key = f"media/blog_images/{filename}"
-            
+
             success, result = upload_to_s3(
                 image_field,
                 s3_key,
@@ -558,7 +559,7 @@ def handle_blog_post_save(sender, instance, created, **kwargs):
                     'field': field_name
                 }
             )
-            
+
             if success:
                 logger.info(f"  ✅ Uploaded to S3: {result}")
             else:

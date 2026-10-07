@@ -154,11 +154,12 @@ def safe_cache_delete_pattern(pattern: str) -> None:
     """Delete a cache key pattern — silently skips if backend doesn't support it."""
     from django.core.cache import cache
     try:
-        cache.delete_pattern(pattern)
-        logger.debug("Deleted cache pattern: %s", pattern)
-    except AttributeError:
-        # LocMemCache doesn't support delete_pattern — safe to ignore locally
-        pass
+        delete_pattern = getattr(cache, 'delete_pattern', None)
+        if callable(delete_pattern):
+            delete_pattern(pattern)
+            logger.debug("Deleted cache pattern: %s", pattern)
+        else:
+            logger.debug("Cache backend does not support delete_pattern; skipping: %s", pattern)
     except Exception as e:
         logger.error("Error deleting cache pattern %s: %s", pattern, e)
 
@@ -207,7 +208,7 @@ if AWS_CREDENTIALS_PROVIDED and USE_S3:
     AWS_S3_SECURE_URLS      = True
     AWS_S3_FILE_OVERWRITE   = False
     AWS_S3_SIGNATURE_VERSION = 's3v4'
-    AWS_DEFAULT_ACL         = 'public-read'
+    AWS_DEFAULT_ACL         = 'None'
     AWS_QUERYSTRING_AUTH    = False
     AWS_S3_OBJECT_PARAMETERS = {'CacheControl': 'max-age=86400'}
     DEFAULT_FILE_STORAGE    = 'hospital.storage_backends.MediaStorage'
@@ -390,11 +391,12 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # ========== STARTUP BANNER ==========
+database_engine = DATABASES.get('default', {}).get('ENGINE', 'unknown')
 logger.info("=" * 50)
 logger.info("🚀 Hospital Backend Starting Up")
 logger.info("🔧 DEBUG:    %s", DEBUG)
 logger.info("🌍 Hosts:    %s", ALLOWED_HOSTS)
-logger.info("🗄️  Database: %s", DATABASES['default']['ENGINE'])
+logger.info("🗄️  Database: %s", database_engine)
 logger.info("⚡ Redis:    %s", bool(REDIS_URL))
 logger.info("☁️  S3:       %s", AWS_CREDENTIALS_PROVIDED and USE_S3)
 logger.info("🔗 Base URL: %s", BASE_URL)
